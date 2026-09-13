@@ -1,0 +1,377 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Table</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --ink: #f3eee6;
+        --mute: #8d867c;
+        --faint: #5a544c;
+        --line: rgba(243, 238, 230, 0.1);
+      }
+      * { box-sizing: border-box; }
+      html {
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        padding: 72px 28px 96px;
+        background: #161411;
+        color: var(--ink);
+        font: 16px/1.5 ui-sans-serif, -apple-system, system-ui, sans-serif;
+      }
+      main {
+        width: min(100%, 440px);
+        margin-inline: auto;
+      }
+      h1 {
+        margin: 0;
+        font-size: 15px;
+        font-weight: 500;
+        text-wrap: balance;
+      }
+      .lede {
+        margin: 6px 0 0;
+        color: var(--mute);
+        font-size: 15px;
+        text-wrap: pretty;
+      }
+      .status {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 28px 0 0;
+        color: var(--mute);
+        font-size: 13px;
+      }
+      .status.is-wait { color: var(--ink); }
+      .dot {
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: var(--faint);
+        flex: 0 0 auto;
+      }
+      .dot.live, .dot.wait { background: var(--ink); }
+      .party {
+        display: none;
+        width: 100%;
+        margin: 40px 0 0;
+        padding: 0;
+        min-height: 86px;
+        border: 0;
+        background: transparent;
+        color: var(--ink);
+        font: 300 96px/0.9 ui-sans-serif, -apple-system, system-ui, sans-serif;
+        letter-spacing: -0.05em;
+        font-variant-numeric: tabular-nums;
+        pointer-events: none;
+      }
+      body.is-heard .party { display: block; }
+      #table {
+        display: none;
+        margin: 10px 0 0;
+        color: var(--mute);
+        font-size: 15px;
+      }
+      body.is-reserved #table { display: block; }
+      .evidence {
+        display: none;
+        margin: 40px 0 0;
+        gap: 20px;
+      }
+      body.is-heard .evidence { display: grid; }
+      label {
+        display: block;
+        color: var(--faint);
+        font-size: 13px;
+        margin: 0 0 6px;
+      }
+      textarea {
+        display: block;
+        width: 100%;
+        min-height: 3.2em;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: var(--ink);
+        font: inherit;
+        resize: none;
+        field-sizing: content;
+      }
+      textarea:focus { outline: none; }
+      .claims {
+        min-height: 1.4em;
+        color: var(--ink);
+        font-variant-numeric: tabular-nums;
+      }
+      .claim + .claim { margin-top: 4px; }
+      .claim.is-empty { color: var(--faint); }
+      #stale {
+        display: none;
+        margin: 36px 0 0;
+        padding: 10px 0;
+        min-height: 40px;
+        border: 0;
+        background: none;
+        color: var(--mute);
+        font: 15px/1 inherit;
+        cursor: pointer;
+        transition-property: transform, color;
+        transition-duration: 120ms;
+        transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+      }
+      body.is-heard #stale { display: block; }
+      #stale:hover { color: var(--ink); }
+      #stale:active { transform: scale(0.96); }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Table</h1>
+      <p class="lede">Shift+Right Command, then speak. Enter confirms.</p>
+
+      <div class="status" id="status">
+        <span class="dot" id="dot"></span>
+        <span id="statusText">Waiting for this Mac.</span>
+      </div>
+
+      <input id="party" class="party" value="" inputmode="numeric" readonly tabindex="-1" autocomplete="off" aria-label="Party size" />
+      <div id="table"><span id="tableLine"></span></div>
+
+      <div class="evidence">
+        <div>
+          <label for="spoken">You said</label>
+          <textarea id="spoken" autocomplete="off" rows="2"></textarea>
+        </div>
+        <div>
+          <label for="cleaned">It typed</label>
+          <textarea id="cleaned" autocomplete="off" rows="2"></textarea>
+        </div>
+        <div class="claims" id="claims"></div>
+      </div>
+
+      <button id="stale" type="button">Book six instead</button>
+    </main>
+
+    <script type="module">
+      const DIGITS = {
+        zero: "0", one: "1", two: "2", three: "3", four: "4", five: "5",
+        six: "6", seven: "7", eight: "8", nine: "9", ten: "10", eleven: "11",
+        twelve: "12", twenty: "20", thirty: "30", forty: "40", fifty: "50",
+        sixty: "60", seventy: "70", eighty: "80", ninety: "90",
+      };
+
+      const spoken = document.getElementById("spoken");
+      const cleaned = document.getElementById("cleaned");
+      const party = document.getElementById("party");
+      const claimBox = document.getElementById("claims");
+      const status = document.getElementById("status");
+      const statusText = document.getElementById("statusText");
+      const dot = document.getElementById("dot");
+      const table = document.getElementById("table");
+      const tableLine = document.getElementById("tableLine");
+
+      const SESSION = "__LOSSLESS_SESSION__";
+      const DOCUMENT = `${location.origin || "http://127.0.0.1:18764"}${location.pathname || "/"}`;
+      let socket = null;
+      let lastUtterance = null;
+
+      function digitOf(text) {
+        const parts = String(text ?? "").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+        for (const part of parts) {
+          if (/^\d+$/.test(part)) return part;
+          if (DIGITS[part]) return DIGITS[part];
+        }
+        return "";
+      }
+
+      function lastNumber(text) {
+        const hits = String(text ?? "").match(/\d+/g);
+        return hits?.at(-1) ?? "";
+      }
+
+      function partySize(utterance, side) {
+        if (side) return digitOf(utterance.claims?.[0]?.[side]);
+        const chosen = digitOf(utterance.claims?.[0]?.after);
+        if (chosen) return chosen;
+        return lastNumber(utterance.compiled);
+      }
+
+      function showClaims(list) {
+        claimBox.replaceChildren();
+        if (!list.length) {
+          const line = document.createElement("div");
+          line.className = "claim is-empty";
+          line.textContent = "None";
+          claimBox.append(line);
+          return;
+        }
+        for (const claim of list) {
+          const line = document.createElement("div");
+          line.className = "claim";
+          line.textContent = `${claim.before} → ${claim.after}`;
+          claimBox.append(line);
+        }
+      }
+
+      function setStatus(kind, text) {
+        dot.className = `dot ${kind}`;
+        status.className = `status${kind === "wait" ? " is-wait" : ""}`;
+        statusText.textContent = text;
+      }
+
+      function showReserved(size) {
+        document.body.classList.add("is-reserved");
+        table.style.display = "block";
+        tableLine.textContent = "Reserved.";
+        return `Reserved for ${size}.`;
+      }
+
+      async function reserve({ partySize }) {
+        return { content: [{ type: "text", text: showReserved(partySize) }] };
+      }
+
+      const reserveTable = {
+        name: "reserveTable",
+        description: "Reserve a table for a party.",
+        inputSchema: {
+          type: "object",
+          properties: { partySize: { type: "string" } },
+          required: ["partySize"],
+        },
+        annotations: { consequentialHint: true, readOnlyHint: false },
+        execute: reserve,
+      };
+
+      const ctx = document.modelContext;
+      if (ctx?.registerTool) ctx.registerTool(reserveTable);
+
+      async function tools() {
+        if (document.modelContext?.getTools) return document.modelContext.getTools();
+        return [reserveTable];
+      }
+
+      async function runTool(name, args) {
+        if (document.modelContext?.executeTool && document.modelContext.getTools) {
+          const list = await document.modelContext.getTools();
+          const tool = list.find((item) => item.name === name);
+          if (tool) return document.modelContext.executeTool(tool, args);
+        }
+        if (name === reserveTable.name) return reserveTable.execute(args);
+        throw new Error(`unknown tool ${name}`);
+      }
+
+      function send(message) {
+        if (socket?.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify(message));
+        }
+      }
+
+      async function propose(utterance, size) {
+        const list = await tools();
+        const tool = list.find((item) => item.name === "reserveTable") ?? list[0];
+        if (!tool) {
+          send({ type: "noTools", utteranceId: utterance.utteranceId });
+          setStatus("wait", "Nothing to do on this page.");
+          return;
+        }
+        party.value = size;
+        send({
+          type: "propose",
+          utteranceId: utterance.utteranceId,
+          origin: location.origin || "http://127.0.0.1:18764",
+          document: DOCUMENT,
+          tool: tool.name,
+          fields: [{ name: "partySize", value: String(size) }],
+          readOnly: false,
+        });
+        setStatus("wait", `Table for ${size}. Enter confirms.`);
+      }
+
+      function applyUtterance(utterance) {
+        lastUtterance = utterance;
+        document.body.classList.add("is-heard");
+        spoken.value = utterance.raw ?? "";
+        cleaned.value = utterance.clean ?? "";
+        showClaims(utterance.claims ?? []);
+        const size = partySize(utterance);
+        if (size) party.value = size;
+        document.body.classList.remove("is-reserved");
+        table.style.display = "none";
+        setStatus("live", "Heard.");
+        propose(utterance, size);
+      }
+
+      async function execute(message) {
+        setStatus("wait", "Booking…");
+        try {
+          const result = await runTool(message.tool, message.arguments ?? {});
+          const text = typeof result === "string"
+            ? result
+            : result?.content?.[0]?.text ?? showReserved(message.arguments?.partySize ?? party.value);
+          if (!table.style.display || table.style.display === "none") {
+            const size = message.arguments?.partySize ?? party.value;
+            showReserved(size);
+          }
+          send({ type: "executed", utteranceId: message.utteranceId, result: text });
+          setStatus("live", "Reserved.");
+        } catch (error) {
+          send({ type: "error", message: String(error.message ?? error) });
+          setStatus("", String(error.message ?? error));
+        }
+      }
+
+      function connect() {
+        const host = location.protocol === "file:" ? "127.0.0.1:18764" : location.host;
+        socket = new WebSocket(`ws://${host}/actions?s=${SESSION}`);
+        socket.addEventListener("open", () => {
+          send({
+            type: "hello",
+            origin: location.origin || "http://127.0.0.1:18764",
+            document: DOCUMENT,
+            secret: SESSION,
+          });
+          setStatus("live", "Connected.");
+        });
+        socket.addEventListener("message", (event) => {
+          let message;
+          try { message = JSON.parse(event.data); } catch { return; }
+          if (message.type === "utterance") applyUtterance(message);
+          if (message.type === "execute") execute(message);
+          if (message.type === "decision") {
+            if (message.verdict === "block") {
+              setStatus("wait", `Blocked. ${message.reason}`);
+            } else {
+              setStatus("wait", `${message.reason}. Enter confirms.`);
+            }
+          }
+          if (message.type === "cancel") {
+            setStatus("wait", message.reason ? `Cancelled. ${message.reason}` : "Cancelled.");
+          }
+        });
+        socket.addEventListener("close", () => {
+          setStatus("", "Open Demo from the menu.");
+          setTimeout(connect, 1200);
+        });
+        socket.addEventListener("error", () => socket.close());
+      }
+
+      document.getElementById("stale").addEventListener("click", () => {
+        if (!lastUtterance) {
+          setStatus("wait", "Nothing heard yet.");
+          return;
+        }
+        const size = partySize(lastUtterance, "before") || "6";
+        propose(lastUtterance, size);
+        setStatus("wait", `Table for ${size}. Enter confirms.`);
+      });
+
+      connect();
+    </script>
+  </body>
+</html>
