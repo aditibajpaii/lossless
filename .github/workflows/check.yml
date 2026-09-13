@@ -1,0 +1,23 @@
+name: check
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: toolchain
+        run: |
+          swift --version
+          sw_vers
+          swift -version | grep -qE 'Swift version 6\.[2-9]|Swift version [7-9]' \
+            || { echo "::error::Swift 6.2 or newer required"; exit 1; }
+      - name: format
+        run: xcrun swift-format lint --strict --recursive Sources Tests
+      - name: build
+        run: swift build -Xswiftc -warnings-as-errors
+      - name: test
+        run: swift test
+      - name: bundle
+        run: scripts/bundle.sh debug
